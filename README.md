@@ -76,7 +76,7 @@ This document defines each output variable, including timing metrics (e.g., dela
 
 ## Requirements
 
-- MATLAB (R2021a or later recommended)
+- MATLAB (R2025b or later recommended)
 - No external toolboxes required beyond standard MATLAB functionality
 
 ---
