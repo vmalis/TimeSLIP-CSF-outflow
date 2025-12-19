@@ -1,0 +1,237 @@
+function [fit_result, gof, x_fine, y_fine, fracGaus, fracGamma, fit_bc] = aslCombinedFit3(x, y, param, varargin)
+% Bi-component ASL fit: Gamma variate + Gaussian bolus
+% Constraints (via re-parameterization):
+%   dtG      >= minTI          (Gaussian cannot start before first TI)
+%   dtGamma  = dtG + g^2 + Δ   (Gamma always after Gaussian by ≥ Δ)
+%   perfC    = A * k, 0<=k<=1  (Gamma amplitude ≤ Gaussian amplitude A)
+%
+% Extra rules:
+%   1) If last measured point has y=0 AND max(x) < 2*T1:
+%        treat as "no perfusion" and force Gamma component to zero.
+%   2) Fit Gaussian-only and Combined models; if R^2(Gauss) >= R^2(Combined),
+%        force Gamma component to zero (avoid overfitting).
+%   3) Final fitted curve is clipped so that max(y_fit) <= max(raw y).
+
+    % ---------- original data copy ----------
+    T1     = param.T1;         % fixed T1 in the Gamma component
+    x_orig = x(:).';
+    y_orig = y(:).';
+
+    if isempty(x_orig) || isempty(y_orig)
+        x_orig = 0;
+        y_orig = 0;
+    end
+
+    % max of the ORIGINAL data (for clipping later)
+    max_y_raw = max(y_orig);
+
+    % earliest non-zero TI (for Gaussian delay lower bound)
+    if any(x_orig > 0)
+        minTI = min(x_orig(x_orig > 0));
+    else
+        minTI = 0;
+    end
+
+    % ---------- no-perfusion check on ORIGINAL data ----------
+    [xLast, idxLast] = max(x_orig);   % max TI in original data
+    yLast            = y_orig(idxLast);
+    noPerf           = (yLast == 0) && (xLast < 2*T1);
+
+    % ---------- basic pre-processing (padding for stability) ----------
+    % prepend (0,0)
+    x = cat(2, 0, x_orig);
+    y = cat(2, 0, y_orig);
+    % append one more point at TI + T1 with zero signal
+    % x = cat(2, x, x(end) + T1);
+    % y = cat(2, y, 0);
+
+    if numel(x) < 6
+        x = zeros(1,6);
+        y = zeros(1,6);
+    end
+
+    maxX = max(x);
+    if nargin > 3 && isnumeric(varargin{1})
+        maxX = varargin{1};
+    end
+
+    % ---------- component models ----------
+    softstep = @(z,eps) 1 ./ (1 + exp(-z./eps));   % smooth Heaviside
+
+    epsG_on  = 100;   % ms, onset smoothing for Gaussian
+    epsG_off = 500;   % ms, tail smoothing for Gaussian / Gamma onset
+
+    % Gaussian part (Eq.2 style) with smooth entrance and exit
+    gaussian_bc = @(A, dtG, tau, TI) ...
+        A .* max( ...
+            exp( -((TI - dtG - 2*tau).^2) ./ (2*tau.^2) ) - exp(-2), ...
+            0 ) ...                                   % clamp core ≥ 0
+      .* softstep(TI - dtG,           epsG_on) ...    % smooth turn-on
+      .* softstep((dtG + 4*tau) - TI, epsG_off);      % smooth turn-off
+
+    % Shifted Gamma variate with smooth entrance at dtGamma
+    gamma_variate = @(perfC, dtGamma, TI) ...
+        perfC .* (TI - dtGamma) .* exp(-(TI - dtGamma) ./ T1) ...
+          .* softstep(TI - dtGamma, epsG_off);
+
+    % Small enforced gap between Gaussian delay and Gamma delay (ms)
+    delayGap = 500;
+
+    % ------------------------------------------------------------------
+    % Re-parameterization for constraints in COMBINED model:
+    %
+    %   Fitted coefficients:  A, dtG, tau, k, g
+    %
+    %     perfC   = A * k                     with 0 <= k <= 1
+    %     dtGamma = dtG + g.^2 + delayGap     (ensures dtGamma > dtG)
+    % ------------------------------------------------------------------
+    combinedModel = @(A, dtG, tau, k, g, TI) ...
+        gaussian_bc(A, dtG, tau, TI) + ...
+        gamma_variate(A .* k, dtG + g.^2 + delayGap, TI);
+
+    % ---------- initial guesses ----------
+    maxy = max(y);
+    A0   = maxy;
+    dtG0 = max(minTI, mean(x)/4);
+    tau0 = std(x);
+    if ~isfinite(tau0) || tau0 <= 0
+        tau0 = (max(x) - min(x)) / 6;
+    end
+    k0   = 0.5;
+    g0   = sqrt(max(x)) / 4;    % typical spacing between G and Gamma
+
+    % Bound g so that g.^2 remains in a reasonable delay range
+    gMax = sqrt(maxX);
+
+    % COMBINED start/bounds: [A, dtG, tau, k, g]
+    startC = [A0,  dtG0, tau0, k0,  g0];
+    lowerC = [0,   minTI, 500,   0,  -gMax];
+    upperC = [2*maxy, maxX, 3000, 1,  gMax];
+
+    % ---------- GAUSSIAN-ONLY model (for R^2 comparison) ----------
+    % model: y = gaussian_bc(A, dtG, tau, TI)
+    ftG = fittype(@(A,dtG,tau,TI) ...
+                  gaussian_bc(A,dtG,tau,TI), ...
+                  'coefficients', {'A','dtG','tau'}, ...
+                  'independent',  'TI');
+
+    startG = [A0, dtG0, tau0];
+    lowerG = [0,  minTI, 0];
+    upperG = [2*maxy, maxX, 3000];
+
+    optsG = fitoptions('Method','NonlinearLeastSquares', ...
+                       'StartPoint', startG, ...
+                       'Lower',      lowerG, ...
+                       'Upper',      upperG);
+
+    [fitG, gofG] = fit(x', y', ftG, optsG);
+
+    % ---------- COMBINED model fit ----------
+    ftC = fittype(@(A,dtG,tau,k,g,TI) ...
+                    combinedModel(A,dtG,tau,k,g,TI), ...
+                  'coefficients', {'A','dtG','tau','k','g'}, ...
+                  'independent',  'TI');
+
+    optsC = fitoptions('Method','NonlinearLeastSquares', ...
+                       'StartPoint', startC, ...
+                       'Lower',      lowerC, ...
+                       'Upper',      upperC);
+
+    [fitC, gofC] = fit(x', y', ftC, optsC);
+
+    % By default, return the COMBINED fit object and its gof
+    fit_result = fitC;
+    gof        = gofC;
+
+    % ---------- evaluate on fine grid ----------
+    x_fine = linspace(min(x), maxX, 1000);
+
+    % Extract combined parameters
+    A   = fitC.A;
+    dtG = fitC.dtG;
+    tau = fitC.tau;
+    k   = fitC.k;
+    g   = fitC.g;
+
+    % Derived parameters for Gamma
+    perfC   = A .* k;
+    dtGamma = dtG + g.^2 + delayGap;   % guaranteed > dtG
+
+    % Component curves (from combined model)
+    gauss_y = gaussian_bc(A, dtG, tau, x_fine);
+    gamma_y = gamma_variate(perfC, dtGamma, x_fine);
+
+    % ---------- model selection / perfusion suppression ----------
+    % 1) If noPerf flag triggers -> force gamma off
+    % 2) Else, if Gaussian-only R^2 >= combined R^2 -> force gamma off
+
+    useGamma = true;
+    if noPerf
+        useGamma = false;
+    else
+        if gofG.rsquare >= gofC.rsquare
+            useGamma = false;
+        end
+    end
+
+    if ~useGamma
+        % Kill Gamma component
+        perfC   = 0;
+        gamma_y = zeros(size(x_fine));
+        dtGamma = NaN;  % optional
+    end
+
+    % ---------- build final curve & enforce amplitude <= max(raw y) ----------
+    y_fine = gauss_y + gamma_y;
+    y_fine(y_fine < 0) = 0;
+
+    max_fit = max(y_fine);
+    if max_fit > 0 && max_y_raw > 0 && max_fit > max_y_raw
+        scale   = max_y_raw / max_fit;
+        y_fine  = y_fine * scale;
+        gauss_y = gauss_y * scale;
+        gamma_y = gamma_y * scale;
+        A       = A * scale;
+        perfC   = perfC * scale;
+    end
+
+    y_fine = y_fine.';   % column vector as before
+
+    % ---------- summary metrics ----------
+    [PHG,  idxG]  = max(gauss_y);
+
+    if any(gamma_y > 0)
+        [PHGa, idxGa] = max(gamma_y);
+        TTPGamma      = x_fine(idxGa);
+    else
+        PHGa     = 0;
+        TTPGamma = NaN;
+    end
+
+    fit_bc.PHGauss     = PHG;
+    fit_bc.TTPGauss    = x_fine(idxG);
+    fit_bc.PHGamma     = PHGa;
+    fit_bc.TTPGamma    = TTPGamma;
+    fit_bc.deltaTGauss = dtG;
+    fit_bc.deltaTGamma = dtGamma;
+    fit_bc.tau         = tau;
+    fit_bc.A           = A;
+    fit_bc.perfC       = perfC;
+    fit_bc.gauss       = gauss_y';
+    fit_bc.gamma       = gamma_y';
+
+    if PHGa > 0
+        fit_bc.ratio = PHG / PHGa;
+    else
+        fit_bc.ratio = NaN;  % no gamma peak
+    end
+
+    % ---------- fractions (keep same outputs as old function) ----------
+    if perfC > 0
+        fracGaus  = A / (A + perfC);
+        fracGamma = perfC / (A + perfC);
+    else
+        fracGaus  = 1;
+        fracGamma = 0;
+    end
+end
