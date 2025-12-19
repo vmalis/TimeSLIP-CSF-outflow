@@ -85,7 +85,7 @@ This document defines each output variable, including timing metrics (e.g., dela
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/your-repo-name.git
+   git clone [https://github.com/your-username/your-repo-name.git](https://github.com/vmalis/TimeSLIP-CSF-outflow)
    ```
 2. Add the repository to your MATLAB path.
 3. Configure input data paths and parameters in `ASL_main.m`.
