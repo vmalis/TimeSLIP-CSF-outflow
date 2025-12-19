@@ -101,4 +101,5 @@ If you use this code in your work, please cite the associated manuscript (detail
 
 ## License
 
-License information to be added.
+This project is released under the MIT License.  
+See the `LICENSE` file for full license text.
