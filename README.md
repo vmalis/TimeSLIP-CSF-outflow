@@ -1,5 +1,7 @@
 # Bi-component Modeling of CSF Outflow Using Time-SLIP MRI
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17982328.svg)](https://doi.org/10.5281/zenodo.17982328)
+
 This repository contains MATLAB code for analyzing cerebrospinal fluid (CSF) outflow dynamics using non-contrast Time–Spatial Labeling Inversion Pulse (Time-SLIP) MRI. The pipeline implements a bi-component analytical model that separates fast bulk-displacement and slower perfusion-like components of CSF signal evolution, enabling region-resolved and age-sensitive characterization of CSF outflow pathways in the human brain.
 
 <p align="center">
