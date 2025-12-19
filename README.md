@@ -95,6 +95,15 @@ This document defines each output variable, including timing metrics (e.g., dela
 
 ---
 
+## Test dataset
+
+A fully anonymized Time-SLIP MRI test dataset supporting this pipeline is available on Zenodo:
+
+Malis, V. (2025). *Time-SLIP MRI test dataset for regional CSF outflow modeling* (Version 1.0).  
+Zenodo. https://doi.org/10.5281/zenodo.17982329
+
+---
+
 ## Citation
 
 If you use this code in your work, please cite the associated manuscript (details to be added upon publication).
